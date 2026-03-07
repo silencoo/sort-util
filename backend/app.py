@@ -63,6 +63,36 @@ def _extract_scan_root(tree_file):
     return ''
 
 
+def _resolve_browse_path(raw_path):
+    """Resolve a browse target to an existing directory when possible."""
+    raw = (raw_path or '').strip() or DATA_DIR
+
+    # Map docker-style /data paths to current DATA_DIR when running outside docker.
+    posix_raw = raw.replace('\\', '/')
+    if DATA_DIR and DATA_DIR != '/data' and (posix_raw == '/data' or posix_raw.startswith('/data/')):
+        suffix = posix_raw[len('/data'):].lstrip('/')
+        raw = os.path.join(DATA_DIR, suffix) if suffix else DATA_DIR
+
+    candidate = os.path.abspath(raw)
+
+    # If the target is an existing file, browse its parent directory.
+    if os.path.isfile(candidate):
+        parent = os.path.dirname(candidate)
+        return parent or candidate
+
+    # Walk up to find the nearest existing directory.
+    probe = candidate
+    while probe and not os.path.isdir(probe):
+        parent = os.path.dirname(probe.rstrip('/\\'))
+        if not parent or parent == probe:
+            break
+        probe = parent
+
+    if os.path.isdir(probe):
+        return probe
+    return candidate
+
+
 # -------- Static File Serving --------
 
 @app.route('/', defaults={'path': ''})
@@ -267,9 +297,10 @@ def export():
 @app.route('/api/browse', methods=['GET'])
 def browse():
     """List directories and files at a given path for the folder browser."""
-    browse_path = request.args.get('path', DATA_DIR)
+    requested_path = request.args.get('path', DATA_DIR)
+    browse_path = _resolve_browse_path(requested_path)
     if not os.path.isdir(browse_path):
-        return jsonify({"error": f"Not a directory: {browse_path}"}), 400
+        return jsonify({"error": f"Not a directory: {requested_path}"}), 400
 
     items = []
     try:
@@ -302,6 +333,7 @@ def browse():
 
     parent = os.path.dirname(browse_path.rstrip('/'))
     return jsonify({
+        "requested": requested_path,
         "current": browse_path,
         "parent": parent if parent != browse_path else None,
         "items": items,
