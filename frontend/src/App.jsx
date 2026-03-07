@@ -15,15 +15,21 @@ export default function App() {
     const [page, setPage] = useState('dashboard');
     const [toast, setToast] = useState(null);
     const [activeScanPath, setActiveScanPath] = useState('');
+    const [browsePath, setBrowsePath] = useState('');
 
-    const showToast = (message, type = 'error') => {
+    const showToast = useCallback((message, type = 'error') => {
         setToast({ message, type });
         setTimeout(() => setToast(null), 5000);
-    };
+    }, []);
 
     const switchToAnalysis = (path) => {
         setActiveScanPath(path);
         setPage('dashboard');
+    };
+
+    const switchToBrowse = (path) => {
+        setBrowsePath(path || '');
+        setPage('browse');
     };
 
     return (
@@ -58,8 +64,15 @@ export default function App() {
                 )}
             </aside>
             <main className="main-content">
-                {page === 'dashboard' && <DashboardPage showToast={showToast} activePath={activeScanPath} setActivePath={setActiveScanPath} />}
-                {page === 'browse' && <BrowsePage showToast={showToast} onAnalyze={switchToAnalysis} />}
+                {page === 'dashboard' && (
+                    <DashboardPage
+                        showToast={showToast}
+                        activePath={activeScanPath}
+                        setActivePath={setActiveScanPath}
+                        onBrowsePath={switchToBrowse}
+                    />
+                )}
+                {page === 'browse' && <BrowsePage showToast={showToast} onAnalyze={switchToAnalysis} initialPath={browsePath} />}
                 {page === 'tree' && <TreeViewPage showToast={showToast} activePath={activeScanPath} />}
                 {page === 'cleanup' && <CleanupPage showToast={showToast} />}
                 {page === 'settings' && <SettingsPage showToast={showToast} />}
@@ -70,42 +83,126 @@ export default function App() {
 
 // ===================== Dashboard =====================
 
-function DashboardPage({ showToast, activePath, setActivePath }) {
+function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(false);
+    const [linksLoading, setLinksLoading] = useState(false);
+    const [linkData, setLinkData] = useState(null);
+    const [emptyHint, setEmptyHint] = useState('');
     const [scanPath, setScanPath] = useState(activePath || '/data');
 
-    const loadData = useCallback((path) => {
+    useEffect(() => {
+        if (activePath) setScanPath(activePath);
+    }, [activePath]);
+
+    useEffect(() => {
+        if (activePath) return;
+        fetch(`${API}/api/config`)
+            .then(r => r.json())
+            .then(cfg => {
+                if (cfg?.data_dir) {
+                    setScanPath(prev => (prev === '/data' || !prev ? cfg.data_dir : prev));
+                }
+            })
+            .catch(() => { /* ignore config fallback errors */ });
+    }, [activePath]);
+
+    const loadLinks = useCallback(async (path) => {
+        if (!path) {
+            setLinkData(null);
+            return;
+        }
+        setLinksLoading(true);
+        try {
+            const r = await fetch(`${API}/api/links?path=${encodeURIComponent(path)}`);
+            const d = await r.json();
+            if (!r.ok || d.error) {
+                setLinkData(null);
+                showToast(d.error || 'Link analysis failed');
+                return;
+            }
+            setLinkData(d);
+        } catch {
+            setLinkData(null);
+            showToast('Failed to analyze hardlinks/symlinks');
+        } finally {
+            setLinksLoading(false);
+        }
+    }, [showToast]);
+
+    const loadData = useCallback(async (path) => {
         setLoading(true);
         const url = path ? `${API}/api/analyze?path=${encodeURIComponent(path)}` : `${API}/api/analyze`;
-        fetch(url)
-            .then(r => r.json())
-            .then(d => { d.error ? (showToast(d.error), setData(null)) : setData(d); setLoading(false); })
-            .catch(() => { showToast('Failed to connect'); setLoading(false); });
-    }, [showToast]);
+        try {
+            const r = await fetch(url);
+            const d = await r.json();
+            if (!r.ok || d.error) {
+                setData(null);
+                setLinkData(null);
+                if (r.status === 404 && (d.error || '').includes('No scan data found')) {
+                    setEmptyHint('No scan data yet. Use Scan or Browse to start.');
+                    return;
+                }
+                setEmptyHint('');
+                showToast(d.error || 'Failed to load analysis');
+                return;
+            }
+
+            setData(d);
+            setEmptyHint('');
+            const resolvedPath = path || (d.scan_path && d.scan_path !== 'latest' ? d.scan_path : '');
+            if (resolvedPath) {
+                setScanPath(resolvedPath);
+                loadLinks(resolvedPath);
+            } else {
+                setLinkData(null);
+            }
+        } catch {
+            setData(null);
+            setLinkData(null);
+            showToast('Failed to connect');
+        } finally {
+            setLoading(false);
+        }
+    }, [loadLinks, showToast]);
 
     useEffect(() => { loadData(activePath); }, [activePath, loadData]);
 
-    const handleRescan = () => {
+    const handleRescan = async () => {
+        const nextPath = scanPath.trim();
+        if (!nextPath) {
+            showToast('Directory path is required');
+            return;
+        }
         setScanning(true);
-        fetch(`${API}/api/generate`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: scanPath }),
-        })
-            .then(r => r.json())
-            .then(d => {
-                d.error ? showToast(d.error) : showToast(d.message, 'success');
-                setScanning(false);
-                setActivePath(scanPath);
-                loadData(scanPath);
-            })
-            .catch(() => { showToast('Scan failed'); setScanning(false); });
+        try {
+            const r = await fetch(`${API}/api/generate`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: nextPath }),
+            });
+            const d = await r.json();
+            if (!r.ok || d.error) {
+                showToast(d.error || 'Scan failed');
+                return;
+            }
+            showToast(d.message, 'success');
+            if (activePath === nextPath) {
+                await loadData(nextPath);
+            } else {
+                setActivePath(nextPath);
+            }
+        } catch {
+            showToast('Scan failed');
+        } finally {
+            setScanning(false);
+        }
     };
 
-    const exportUrl = activePath
-        ? `/api/export?path=${encodeURIComponent(activePath)}`
-        : '/api/export';
+    const exportPath = activePath || (data?.scan_path && data.scan_path !== 'latest' ? data.scan_path : '');
+    const exportUrl = exportPath ? `/api/export?path=${encodeURIComponent(exportPath)}` : '/api/export';
+    const exportCsvUrl = `${exportUrl}${exportUrl.includes('?') ? '&' : '?'}format=csv`;
+    const exportJsonUrl = `${exportUrl}${exportUrl.includes('?') ? '&' : '?'}format=json`;
 
     return (
         <>
@@ -119,7 +216,7 @@ function DashboardPage({ showToast, activePath, setActivePath }) {
                     </button>
                 </div>
             </header>
-            {loading ? <LoadingInline /> : !data ? <EmptyState message="Enter a directory path and click Scan, or use Browse to select a folder." /> : (
+            {loading ? <LoadingInline /> : !data ? <EmptyState message={emptyHint || 'Enter a directory path and click Scan, or use Browse to select a folder.'} /> : (
                 <>
                     {data.summary && (
                         <div className="summary-bar">
@@ -128,8 +225,8 @@ function DashboardPage({ showToast, activePath, setActivePath }) {
                             <span>{formatSize(data.summary.total_size)}</span>
                             {data.scan_path && <span className="tag">{data.scan_path}</span>}
                             <span style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
-                                <a href={`${exportUrl}&format=csv`} className="btn-sm" download><Download size={12} /> CSV</a>
-                                <a href={`${exportUrl}&format=json`} className="btn-sm" download><Download size={12} /> JSON</a>
+                                <a href={exportCsvUrl} className="btn-sm" download><Download size={12} /> CSV</a>
+                                <a href={exportJsonUrl} className="btn-sm" download><Download size={12} /> JSON</a>
                             </span>
                         </div>
                     )}
@@ -140,16 +237,41 @@ function DashboardPage({ showToast, activePath, setActivePath }) {
                         <StatCard title="Metadata Only" value={data.only_metadata?.length ?? 0} icon={<Search size={24} />} color="purple" />
                         <StatCard title="Archives" value={data.has_archives?.length ?? 0} icon={<FileArchive size={24} />} color="green" />
                         <StatCard title="BT Junk" value={data.bt_junk_files?.length ?? 0} icon={<Bug size={24} />} color="red" />
+                        <StatCard title="Hardlink Groups" value={linkData?.hardlink_groups ?? 0} icon={<HardDrive size={24} />} color="green" />
+                        <StatCard title="Symlinks" value={linkData?.symlink_count ?? 0} icon={<FolderSearch size={24} />} color="blue" />
                     </section>
                     <section className="detailed-view">
                         <DetailCard title="Garbage Files" items={data.garbage_files}
-                            renderItem={f => <><Trash2 size={14} className="icon-red" /> {f.path} <span className="tag">{f.reason}</span></>} />
+                            renderItem={f => (
+                                <>
+                                    <Trash2 size={14} className="icon-red" />
+                                    <ResultPathRow path={f.path} type="file" onBrowsePath={onBrowsePath} />
+                                    <span className="tag">{f.reason}</span>
+                                </>
+                            )} />
                         <DetailCard title="Empty Directories" items={data.empty_dirs}
-                            renderItem={d => <><FolderOpen size={14} className="icon-blue" /> {d.path}</>} />
+                            renderItem={d => (
+                                <>
+                                    <FolderOpen size={14} className="icon-blue" />
+                                    <ResultPathRow path={d.path} type="dir" onBrowsePath={onBrowsePath} />
+                                </>
+                            )} />
                         <DetailCard title="Metadata-Only" items={data.only_metadata}
-                            renderItem={d => <><Search size={14} className="icon-purple" /> {d.path} <span className="tag">{d.file_count} files</span></>} />
+                            renderItem={d => (
+                                <>
+                                    <Search size={14} className="icon-purple" />
+                                    <ResultPathRow path={d.path} type="dir" onBrowsePath={onBrowsePath} />
+                                    <span className="tag">{d.file_count} files</span>
+                                </>
+                            )} />
                         <DetailCard title="BT Junk" items={data.bt_junk_files}
-                            renderItem={f => <><Bug size={14} className="icon-red" /> {f.path}</>} />
+                            renderItem={f => (
+                                <>
+                                    <Bug size={14} className="icon-red" />
+                                    <ResultPathRow path={f.path} type="file" onBrowsePath={onBrowsePath} />
+                                </>
+                            )} />
+                        <LinkInsightsCard data={linkData} loading={linksLoading} onBrowsePath={onBrowsePath} />
                     </section>
                 </>
             )}
@@ -159,41 +281,57 @@ function DashboardPage({ showToast, activePath, setActivePath }) {
 
 // ===================== Browse Page =====================
 
-function BrowsePage({ showToast, onAnalyze }) {
+function BrowsePage({ showToast, onAnalyze, initialPath }) {
     const [items, setItems] = useState([]);
     const [current, setCurrent] = useState('');
     const [parent, setParent] = useState(null);
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(null); // path being scanned
 
-    const browse = useCallback((path) => {
+    const browse = useCallback(async (path) => {
         setLoading(true);
         const url = path ? `${API}/api/browse?path=${encodeURIComponent(path)}` : `${API}/api/browse`;
-        fetch(url)
-            .then(r => r.json())
-            .then(d => {
-                if (d.error) { showToast(d.error); setItems([]); }
-                else { setItems(d.items || []); setCurrent(d.current); setParent(d.parent); }
-                setLoading(false);
-            })
-            .catch(() => { showToast('Browse failed'); setLoading(false); });
+        try {
+            const r = await fetch(url);
+            const d = await r.json();
+            if (!r.ok || d.error) {
+                showToast(d.error || 'Browse failed');
+                setItems([]);
+                setCurrent('');
+                setParent(null);
+                return;
+            }
+            setItems(d.items || []);
+            setCurrent(d.current);
+            setParent(d.parent);
+        } catch {
+            showToast('Browse failed');
+        } finally {
+            setLoading(false);
+        }
     }, [showToast]);
 
-    useEffect(() => { browse(''); }, [browse]);
+    useEffect(() => { browse(initialPath || ''); }, [browse, initialPath]);
 
-    const handleScanDir = (dirPath) => {
+    const handleScanDir = async (dirPath) => {
         setScanning(dirPath);
-        fetch(`${API}/api/generate`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: dirPath }),
-        })
-            .then(r => r.json())
-            .then(d => {
-                d.error ? showToast(d.error) : showToast(`Scanned ${dirPath}`, 'success');
-                setScanning(null);
-                browse(current); // refresh to update has_scan badges
-            })
-            .catch(() => { showToast('Scan failed'); setScanning(null); });
+        try {
+            const r = await fetch(`${API}/api/generate`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: dirPath }),
+            });
+            const d = await r.json();
+            if (!r.ok || d.error) {
+                showToast(d.error || 'Scan failed');
+                return;
+            }
+            showToast(`Scanned ${dirPath}`, 'success');
+            browse(current || dirPath); // refresh to update has_scan badges
+        } catch {
+            showToast('Scan failed');
+        } finally {
+            setScanning(null);
+        }
     };
 
     const dirs = items.filter(i => i.is_dir);
@@ -447,6 +585,79 @@ function DetailCard({ title, items = [], renderItem, limit = 20 }) {
     );
 }
 
+function LinkInsightsCard({ data, loading, onBrowsePath }) {
+    const hardlinks = data?.hardlinks || [];
+    const symlinks = data?.symlinks || [];
+
+    return (
+        <div className="card">
+            <h3>Hardlink / Symlink <span className="count">({data ? `${hardlinks.length} / ${symlinks.length}` : '0 / 0'})</span></h3>
+            {loading ? <p className="empty-text">Analyzing links...</p> : !data ? <p className="empty-text">No link analysis data yet.</p> : (
+                <>
+                    <div className="link-summary">
+                        <span className="tag">{data.hardlink_groups || 0} hardlink groups</span>
+                        <span className="tag">{formatSize(data.saved_bytes || 0)} saved</span>
+                        <span className="tag">{data.broken_symlinks || 0} broken symlinks</span>
+                        {data.cross_dir_groups > 0 && <span className="tag">{data.cross_dir_groups} cross-dir groups</span>}
+                    </div>
+
+                    <p className="link-subtitle">Hardlink Groups (Top 8)</p>
+                    <ul className="file-list">
+                        {hardlinks.slice(0, 8).map((group, i) => (
+                            <li key={`hardlink-${i}`}>
+                                <HardDrive size={14} className="icon-green" />
+                                <span className="path-text" title={group.paths?.[0] || ''}>{group.paths?.[0] || '(unknown)'}</span>
+                                <span className="tag">{group.count} links</span>
+                                {group.cross_dir && <span className="tag">cross-dir</span>}
+                                <button
+                                    type="button"
+                                    className="btn-link-inline"
+                                    onClick={() => {
+                                        const target = parentPath(group.paths?.[0] || '');
+                                        if (target) onBrowsePath(target);
+                                    }}
+                                >
+                                    Browse
+                                </button>
+                            </li>
+                        ))}
+                        {hardlinks.length === 0 && <li className="empty-text">No hardlink groups found.</li>}
+                    </ul>
+
+                    <p className="link-subtitle">Symlinks (Top 8)</p>
+                    <ul className="file-list">
+                        {symlinks.slice(0, 8).map((link, i) => (
+                            <li key={`symlink-${i}`}>
+                                <FolderSearch size={14} className={link.broken ? 'icon-red' : 'icon-blue'} />
+                                <ResultPathRow path={link.path} type={link.is_dir ? 'dir' : 'file'} onBrowsePath={onBrowsePath} />
+                                {link.broken && <span className="tag">broken</span>}
+                            </li>
+                        ))}
+                        {symlinks.length === 0 && <li className="empty-text">No symlinks found.</li>}
+                    </ul>
+                </>
+            )}
+        </div>
+    );
+}
+
+function ResultPathRow({ path, type = 'dir', onBrowsePath }) {
+    const target = type === 'file' ? parentPath(path) : path;
+    return (
+        <span className="path-row">
+            <span className="path-text" title={path}>{path}</span>
+            <button
+                type="button"
+                className="btn-link-inline"
+                onClick={() => target && onBrowsePath(target)}
+                disabled={!target}
+            >
+                Browse
+            </button>
+        </span>
+    );
+}
+
 function LoadingInline() { return <div className="loading-state-inline"><div className="spinner"></div><p>Loading...</p></div>; }
 function EmptyState({ message }) { return <div className="empty-state"><AlertTriangle size={48} className="icon-orange" /><h2>No Data</h2><p>{message}</p></div>; }
 function formatSize(bytes) {
@@ -454,4 +665,13 @@ function formatSize(bytes) {
     const u = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
+}
+
+function parentPath(path) {
+    if (!path) return '';
+    const normalized = String(path).replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!normalized) return '';
+    const idx = normalized.lastIndexOf('/');
+    if (idx <= 0) return normalized;
+    return normalized.slice(0, idx);
 }

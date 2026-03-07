@@ -95,6 +95,7 @@ nav {
   flex: 1;
   padding: 28px 32px;
   overflow-y: auto;
+  min-width: 0;
 }
 
 /* Top Bar */
@@ -110,7 +111,8 @@ nav {
 .topbar h1 {
   font-size: 1.6rem;
   font-weight: 600;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .scan-controls {
@@ -184,18 +186,21 @@ nav {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 12px 18px;
   margin-bottom: 24px;
   border-radius: 10px;
   background: rgba(99, 102, 241, 0.08);
   color: var(--text-muted);
   font-size: 0.9rem;
+  min-width: 0;
 }
 
 .summary-bar span {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 /* Stats Grid */
@@ -292,8 +297,9 @@ nav {
 /* Detail Cards */
 .detailed-view {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 20px;
+  min-width: 0;
 }
 
 .card {
@@ -301,6 +307,7 @@ nav {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 20px;
+  min-width: 0;
 }
 
 .card h3 {
@@ -325,11 +332,10 @@ nav {
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  min-width: 0;
 }
 
 .file-list li:last-child {
@@ -344,6 +350,64 @@ nav {
   color: var(--primary);
   margin-left: auto;
   flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.path-text {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.btn-link-inline {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.btn-link-inline:hover {
+  text-decoration: underline;
+}
+
+.btn-link-inline:disabled {
+  opacity: 0.5;
+  cursor: default;
+  text-decoration: none;
+}
+
+.link-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.link-summary .tag,
+.summary-bar .tag {
+  margin-left: 0;
+}
+
+.link-subtitle {
+  margin: 14px 0 8px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .btn-link {

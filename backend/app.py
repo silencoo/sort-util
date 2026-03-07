@@ -10,15 +10,28 @@ from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from scanner import FileScanner
 from operations import BatchOps
+from links import analyze_links
 
 app = Flask(__name__, static_folder='dist', static_url_path='/')
 CORS(app)
 
-# Configuration via environment variables
-TREE_DIR = os.environ.get('TREE_DIR', '/data/.fileanalyzer')
-DATA_DIR = os.environ.get('DATA_DIR', '/data')
+def _ensure_directory(primary_path, fallback_path):
+    """Ensure a directory exists, falling back if primary is unavailable."""
+    try:
+        os.makedirs(primary_path, exist_ok=True)
+        return primary_path
+    except OSError:
+        os.makedirs(fallback_path, exist_ok=True)
+        return fallback_path
 
-os.makedirs(TREE_DIR, exist_ok=True)
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+LOCAL_DATA_DIR = os.path.join(BASE_DIR, 'data')
+DATA_DIR = _ensure_directory(os.environ.get('DATA_DIR', '/data'), LOCAL_DATA_DIR)
+TREE_DIR = _ensure_directory(
+    os.environ.get('TREE_DIR', os.path.join(DATA_DIR, '.fileanalyzer')),
+    os.path.join(LOCAL_DATA_DIR, '.fileanalyzer'),
+)
 
 
 def _tree_file_for(scan_path):
@@ -34,6 +47,20 @@ def _current_tree_file():
         return None
     files = [os.path.join(TREE_DIR, f) for f in os.listdir(TREE_DIR) if f.endswith('.txt')]
     return max(files, key=os.path.getmtime) if files else None
+
+
+def _extract_scan_root(tree_file):
+    """Extract the root path from a cached tree file."""
+    scanner = FileScanner(tree_file)
+    with open(tree_file, 'r', encoding='utf-8') as fh:
+        for line in fh:
+            parsed = scanner._parse_line(line)
+            if parsed is None:
+                continue
+            depth, name, _ = parsed
+            if depth == 0:
+                return name
+    return ''
 
 
 # -------- Static File Serving --------
@@ -60,7 +87,7 @@ def analyze():
         return jsonify({"error": "No scan data found. Run a scan first."}), 404
     scanner = FileScanner(tree_file)
     results = scanner.scan()
-    results['scan_path'] = scan_path or 'latest'
+    results['scan_path'] = scan_path or _extract_scan_root(tree_file) or 'latest'
     return jsonify(results)
 
 
@@ -90,7 +117,7 @@ def tree_view():
                 "depth": depth, "name": name, "path": full_path,
                 "size": size_bytes, "is_file": bool(ext), "ext": ext,
             })
-    return jsonify({"nodes": nodes, "total": len(nodes)})
+    return jsonify({"nodes": nodes, "total": len(nodes), "scan_path": scan_path or _extract_scan_root(tree_file)})
 
 
 @app.route('/api/generate', methods=['POST'])
@@ -122,6 +149,23 @@ def generate():
         return jsonify({"error": f"tree command failed: {e.stderr}"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/links', methods=['GET'])
+def links_view():
+    """Analyze hardlinks and symlinks for a directory tree."""
+    scan_path = request.args.get('path', DATA_DIR).strip() or DATA_DIR
+    max_depth = request.args.get('max_depth', '12')
+    try:
+        max_depth = max(1, min(int(max_depth), 64))
+    except ValueError:
+        return jsonify({"error": "max_depth must be an integer"}), 400
+
+    result = analyze_links(scan_path, max_depth=max_depth)
+    if 'error' in result:
+        return jsonify(result), 400
+    result['scan_path'] = scan_path
+    return jsonify(result)
 
 
 # -------- Batch Operations --------
@@ -297,7 +341,12 @@ def config():
 
     data = request.json or {}
     if 'data_dir' in data:
-        DATA_DIR = data['data_dir']
+        next_data_dir = data['data_dir']
+        try:
+            os.makedirs(next_data_dir, exist_ok=True)
+            DATA_DIR = next_data_dir
+        except OSError as e:
+            return jsonify({"error": f"Cannot use data_dir '{next_data_dir}': {e}"}), 400
     return jsonify({"status": "updated", "data_dir": DATA_DIR})
 
 
