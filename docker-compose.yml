@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  fileanalyzer:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      # Mount your data directories here
+      # Example: mount multiple NAS shares or local directories
+      - ./data:/data
+      # - /mnt/nas/media:/data/media:ro
+      # - /mnt/nas/downloads:/data/downloads:ro
+    environment:
+      - TREE_DIR=/data/.fileanalyzer
+      - DATA_DIR=/data
+    restart: unless-stopped
