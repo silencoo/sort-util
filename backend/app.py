@@ -32,6 +32,10 @@ TREE_DIR = _ensure_directory(
     os.environ.get('TREE_DIR', os.path.join(DATA_DIR, '.fileanalyzer')),
     os.path.join(LOCAL_DATA_DIR, '.fileanalyzer'),
 )
+QUARANTINE_DIR = _ensure_directory(
+    os.environ.get('QUARANTINE_DIR', os.path.join(DATA_DIR, '.quarantine')),
+    os.path.join(LOCAL_DATA_DIR, '.quarantine'),
+)
 
 
 def _tree_file_for(scan_path):
@@ -255,7 +259,32 @@ def execute_delete():
     operations = data.get('operations', [])
     if not operations:
         return jsonify({"error": "No operations provided"}), 400
-    result = BatchOps.execute_delete(operations)
+    mode = data.get('mode', 'delete')
+    root_hint = data.get('root_hint')
+    if mode == 'quarantine':
+        result = BatchOps.execute_quarantine(operations, QUARANTINE_DIR, root_hint=root_hint)
+    else:
+        result = BatchOps.execute_delete(operations)
+    return jsonify(result)
+
+
+@app.route('/api/quarantine', methods=['GET'])
+def quarantine_list():
+    """List quarantine batches and items."""
+    return jsonify(BatchOps.list_quarantine(QUARANTINE_DIR))
+
+
+@app.route('/api/quarantine/restore', methods=['POST'])
+def quarantine_restore():
+    """Restore selected entries from a quarantine batch."""
+    data = request.json or {}
+    batch = data.get('batch')
+    entries = data.get('entries', [])
+    restore_root = data.get('restore_root')
+    if not batch or not entries:
+        return jsonify({"error": "Batch and entries required"}), 400
+    batch_path = os.path.join(QUARANTINE_DIR, batch)
+    result = BatchOps.restore_quarantine(batch_path, entries, restore_root=restore_root)
     return jsonify(result)
 
 
@@ -364,11 +393,12 @@ def list_scans():
 @app.route('/api/config', methods=['GET', 'POST'])
 def config():
     """Get or update runtime configuration."""
-    global DATA_DIR
+    global DATA_DIR, QUARANTINE_DIR
     if request.method == 'GET':
         return jsonify({
             "tree_dir": TREE_DIR,
             "data_dir": DATA_DIR,
+            "quarantine_dir": QUARANTINE_DIR,
         })
 
     data = request.json or {}
@@ -379,7 +409,14 @@ def config():
             DATA_DIR = next_data_dir
         except OSError as e:
             return jsonify({"error": f"Cannot use data_dir '{next_data_dir}': {e}"}), 400
-    return jsonify({"status": "updated", "data_dir": DATA_DIR})
+    if 'quarantine_dir' in data:
+        next_quarantine_dir = data['quarantine_dir']
+        try:
+            os.makedirs(next_quarantine_dir, exist_ok=True)
+            QUARANTINE_DIR = next_quarantine_dir
+        except OSError as e:
+            return jsonify({"error": f"Cannot use quarantine_dir '{next_quarantine_dir}': {e}"}), 400
+    return jsonify({"status": "updated", "data_dir": DATA_DIR, "quarantine_dir": QUARANTINE_DIR})
 
 
 if __name__ == '__main__':

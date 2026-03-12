@@ -9,6 +9,8 @@ All destructive operations require a two-step flow:
 import os
 import re
 import shutil
+import time
+import uuid
 
 
 class BatchOps:
@@ -190,3 +192,171 @@ class BatchOps:
                 failed += 1
 
         return {"success": success, "failed": failed, "freed_bytes": freed, "errors": errors}
+
+    @staticmethod
+    def execute_quarantine(operations, quarantine_root, root_hint=None):
+        """
+        Move files/directories into a quarantine root.
+
+        Args:
+            operations: List of {path, type} dicts
+            quarantine_root: Destination root directory
+            root_hint: Optional root path to preserve relative structure
+
+        Returns:
+            {success: int, failed: int, moved_bytes: int, errors: [...], quarantine_root: str}
+        """
+        success = 0
+        failed = 0
+        moved = 0
+        errors = []
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        batch_id = f'quarantine_{timestamp}_{uuid.uuid4().hex[:8]}'
+
+        try:
+            os.makedirs(quarantine_root, exist_ok=True)
+        except OSError as e:
+            return {"success": 0, "failed": len(operations), "moved_bytes": 0, "errors": [str(e)], "quarantine_root": quarantine_root}
+
+        batch_dir = os.path.join(quarantine_root, batch_id)
+        try:
+            os.makedirs(batch_dir, exist_ok=True)
+        except OSError as e:
+            return {"success": 0, "failed": len(operations), "moved_bytes": 0, "errors": [str(e)], "quarantine_root": quarantine_root}
+
+        root_hint_norm = None
+        if root_hint:
+            root_hint_norm = os.path.abspath(root_hint)
+
+        for op in operations:
+            path = op.get('path')
+            item_type = op.get('type', 'file')
+            if not path:
+                errors.append("Missing path")
+                failed += 1
+                continue
+
+            try:
+                if not os.path.exists(path):
+                    errors.append(f"Not found: {path}")
+                    failed += 1
+                    continue
+
+                if item_type == 'dir':
+                    size = sum(
+                        os.path.getsize(os.path.join(r, f))
+                        for r, _, fs in os.walk(path) for f in fs
+                    )
+                else:
+                    size = os.path.getsize(path)
+
+                dest = BatchOps._build_quarantine_path(batch_dir, path, root_hint_norm)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.move(path, dest)
+                moved += size
+                success += 1
+            except OSError as e:
+                errors.append(f"{path}: {e}")
+                failed += 1
+
+        return {
+            "success": success,
+            "failed": failed,
+            "moved_bytes": moved,
+            "errors": errors,
+            "quarantine_root": batch_dir,
+        }
+
+    @staticmethod
+    def _build_quarantine_path(batch_dir, source_path, root_hint=None):
+        """
+        Build a destination path inside batch_dir.
+        Keeps relative structure when root_hint is provided.
+        """
+        src_abs = os.path.abspath(source_path)
+        if root_hint:
+            root_abs = os.path.abspath(root_hint)
+            try:
+                rel = os.path.relpath(src_abs, root_abs)
+                if rel.startswith('..'):
+                    rel = None
+            except ValueError:
+                rel = None
+        else:
+            rel = None
+
+        if not rel:
+            safe_name = src_abs.replace(':', '').lstrip('\\/').replace('\\', '/')
+            rel = safe_name
+        return os.path.join(batch_dir, rel)
+
+    @staticmethod
+    def list_quarantine(quarantine_root):
+        """List quarantine batches and items."""
+        batches = []
+        if not os.path.isdir(quarantine_root):
+            return {"batches": []}
+
+        for entry in sorted(os.scandir(quarantine_root), key=lambda e: e.name, reverse=True):
+            if not entry.is_dir():
+                continue
+            batch_path = entry.path
+            items = []
+            for root, dirs, files in os.walk(batch_path):
+                for name in files:
+                    full_path = os.path.join(root, name)
+                    rel_path = os.path.relpath(full_path, batch_path)
+                    try:
+                        size = os.path.getsize(full_path)
+                    except OSError:
+                        size = 0
+                    items.append({"path": rel_path, "type": "file", "size": size})
+                for name in dirs:
+                    full_path = os.path.join(root, name)
+                    rel_path = os.path.relpath(full_path, batch_path)
+                    items.append({"path": rel_path, "type": "dir", "size": 0})
+            batches.append({
+                "batch": entry.name,
+                "path": batch_path,
+                "items": items,
+            })
+        return {"batches": batches}
+
+    @staticmethod
+    def restore_quarantine(batch_path, entries, restore_root=None):
+        """Restore selected entries from a quarantine batch."""
+        success = 0
+        failed = 0
+        errors = []
+        restored = 0
+
+        if not os.path.isdir(batch_path):
+            return {"success": 0, "failed": len(entries), "restored_bytes": 0, "errors": ["Batch not found"]}
+
+        for entry in entries:
+            rel_path = entry.get('path')
+            if not rel_path:
+                errors.append("Missing path")
+                failed += 1
+                continue
+            source = os.path.join(batch_path, rel_path)
+            if not os.path.exists(source):
+                errors.append(f"Not found: {rel_path}")
+                failed += 1
+                continue
+
+            dest = os.path.join(restore_root or os.path.dirname(batch_path), rel_path)
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if os.path.isdir(source):
+                    shutil.move(source, dest)
+                else:
+                    size = os.path.getsize(source)
+                    shutil.move(source, dest)
+                    restored += size
+                success += 1
+            except OSError as e:
+                errors.append(f"{rel_path}: {e}")
+                failed += 1
+
+        return {"success": success, "failed": failed, "restored_bytes": restored, "errors": errors}
