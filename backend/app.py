@@ -53,9 +53,16 @@ def _current_tree_file():
     return max(files, key=os.path.getmtime) if files else None
 
 
-def _extract_scan_root(tree_file):
-    """Extract the root path from a cached tree file."""
-    scanner = FileScanner(tree_file)
+def _extract_scan_root(tree_file='', first_line=None):
+    """Extract the root path from a cached tree file or its first line."""
+    scanner = FileScanner(tree_file or '')
+    if first_line is not None:
+        parsed = scanner._parse_line(first_line)
+        if parsed is None:
+            return ''
+        depth, name, _ = parsed
+        return name if depth == 0 else ''
+
     with open(tree_file, 'r', encoding='utf-8') as fh:
         for line in fh:
             parsed = scanner._parse_line(line)
@@ -67,10 +74,10 @@ def _extract_scan_root(tree_file):
     return ''
 
 
-def _scan_metadata(tree_file):
+def _scan_metadata(tree_file, first_line=''):
     """Build user-facing metadata for a cached scan file."""
     stat = os.stat(tree_file)
-    root_path = _extract_scan_root(tree_file)
+    root_path = _extract_scan_root(tree_file, first_line=first_line)
     display_name = os.path.basename(root_path.rstrip('/')) or root_path or os.path.basename(tree_file)
     return {
         "file": os.path.basename(tree_file),
@@ -394,7 +401,7 @@ def list_scans():
                 fpath = os.path.join(TREE_DIR, f)
                 with open(fpath, 'r', encoding='utf-8') as fh:
                     first_line = fh.readline().strip()
-                metadata = _scan_metadata(fpath)
+                metadata = _scan_metadata(fpath, first_line=first_line)
                 metadata["first_line"] = first_line
                 scans.append(metadata)
     return jsonify({"scans": scans})

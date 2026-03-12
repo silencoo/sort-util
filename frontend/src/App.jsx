@@ -472,6 +472,9 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                 return;
             }
             setItems(d.items || []);
+            if (d.current && d.current !== current) {
+                setSearchQuery('');
+            }
             setCurrent(d.current);
             setParent(d.parent);
         } catch {
@@ -479,7 +482,7 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
         } finally {
             setLoading(false);
         }
-    }, [showToast]);
+    }, [current, showToast]);
 
     useEffect(() => { browse(initialPath || ''); }, [browse, initialPath]);
 
