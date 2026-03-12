@@ -67,6 +67,21 @@ def _extract_scan_root(tree_file):
     return ''
 
 
+def _scan_metadata(tree_file):
+    """Build user-facing metadata for a cached scan file."""
+    stat = os.stat(tree_file)
+    root_path = _extract_scan_root(tree_file)
+    display_name = os.path.basename(root_path.rstrip('/')) or root_path or os.path.basename(tree_file)
+    return {
+        "file": os.path.basename(tree_file),
+        "cache_path": tree_file,
+        "scan_path": root_path,
+        "display_name": display_name,
+        "modified": stat.st_mtime,
+        "cache_size": stat.st_size,
+    }
+
+
 def _resolve_browse_path(raw_path):
     """Resolve a browse target to an existing directory when possible."""
     raw = (raw_path or '').strip() or DATA_DIR
@@ -377,16 +392,11 @@ def list_scans():
         for f in sorted(os.listdir(TREE_DIR), key=lambda x: os.path.getmtime(os.path.join(TREE_DIR, x)), reverse=True):
             if f.endswith('.txt'):
                 fpath = os.path.join(TREE_DIR, f)
-                # Read first line to get original scan path
                 with open(fpath, 'r', encoding='utf-8') as fh:
                     first_line = fh.readline().strip()
-                scans.append({
-                    "file": f,
-                    "path": fpath,
-                    "first_line": first_line,
-                    "modified": os.path.getmtime(fpath),
-                    "size": os.path.getsize(fpath),
-                })
+                metadata = _scan_metadata(fpath)
+                metadata["first_line"] = first_line
+                scans.append(metadata)
     return jsonify({"scans": scans})
 
 

@@ -4,8 +4,29 @@ import {
     FolderOpen, VideoOff, Settings, RefreshCw,
     AlertTriangle, X, HardDrive, Bug, Edit3, CheckCircle,
     ChevronRight, ChevronDown, File, Folder, TreePine, Save, Download,
-    ArrowUp, FolderSearch, CheckCircle2, Play,
+    ArrowUp, FolderSearch, CheckCircle2, Play, Clock3, Copy, Sparkles,
 } from 'lucide-react';
+import {
+    METADATA_FILTER_PRESET,
+    addPathWithAncestors,
+    applyTreeCollapse,
+    buildDashboardHighlights,
+    buildTreeDirectoryIndex,
+    copyText,
+    deriveBrowseStats,
+    filterAndSortBrowseItems,
+    formatCountLabel,
+    formatRelativeTime,
+    formatSize,
+    getScanDisplayPath,
+    matchesNodeQuery,
+    matchesScanQuery,
+    parentPath,
+    parseExtensionList,
+    parseLevelFilter,
+    parseSizeInput,
+    scoreAnalysisHealth,
+} from './utils';
 
 const API = '';
 
@@ -91,6 +112,10 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
     const [linkData, setLinkData] = useState(null);
     const [emptyHint, setEmptyHint] = useState('');
     const [scanPath, setScanPath] = useState(activePath || '/data');
+    const [recentScans, setRecentScans] = useState([]);
+    const [scansLoading, setScansLoading] = useState(true);
+    const [scanQuery, setScanQuery] = useState('');
+    const [refreshingInsights, setRefreshingInsights] = useState(false);
 
     useEffect(() => {
         if (activePath) setScanPath(activePath);
@@ -107,6 +132,27 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
             })
             .catch(() => { /* ignore config fallback errors */ });
     }, [activePath]);
+
+    const loadScans = useCallback(async () => {
+        setScansLoading(true);
+        try {
+            const r = await fetch(`${API}/api/scans`);
+            const d = await r.json();
+            if (!r.ok || d.error) {
+                showToast(d.error || 'Failed to load scan history');
+                return;
+            }
+            setRecentScans(d.scans || []);
+        } catch {
+            showToast('Failed to load scan history');
+        } finally {
+            setScansLoading(false);
+        }
+    }, [showToast]);
+
+    useEffect(() => {
+        loadScans();
+    }, [loadScans]);
 
     const loadLinks = useCallback(async (path) => {
         if (!path) {
@@ -169,6 +215,23 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
 
     useEffect(() => { loadData(activePath); }, [activePath, loadData]);
 
+    const handleCopyPath = useCallback(async (path) => {
+        const copied = await copyText(path);
+        showToast(copied ? 'Path copied' : 'Copy failed', copied ? 'success' : 'error');
+    }, [showToast]);
+
+    const handleRefreshInsights = async () => {
+        setRefreshingInsights(true);
+        try {
+            await Promise.all([
+                loadData(activePath),
+                loadScans(),
+            ]);
+        } finally {
+            setRefreshingInsights(false);
+        }
+    };
+
     const handleRescan = async () => {
         const nextPath = scanPath.trim();
         if (!nextPath) {
@@ -187,6 +250,7 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
                 return;
             }
             showToast(d.message, 'success');
+            await loadScans();
             if (activePath === nextPath) {
                 await loadData(nextPath);
             } else {
@@ -203,6 +267,13 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
     const exportUrl = exportPath ? `/api/export?path=${encodeURIComponent(exportPath)}` : '/api/export';
     const exportCsvUrl = `${exportUrl}${exportUrl.includes('?') ? '&' : '?'}format=csv`;
     const exportJsonUrl = `${exportUrl}${exportUrl.includes('?') ? '&' : '?'}format=json`;
+    const workspaceHealth = useMemo(() => scoreAnalysisHealth(data, linkData), [data, linkData]);
+    const dashboardHighlights = useMemo(() => buildDashboardHighlights(data, linkData), [data, linkData]);
+    const filteredScans = useMemo(
+        () => recentScans.filter(scan => matchesScanQuery(scan, scanQuery)).slice(0, 8),
+        [recentScans, scanQuery],
+    );
+    const activeWorkspacePath = exportPath || scanPath;
 
     return (
         <>
@@ -216,6 +287,103 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
                     </button>
                 </div>
             </header>
+            <section className={`hero-panel tone-${workspaceHealth.tone}`}>
+                <div className="hero-copy">
+                    <span className={`hero-badge tone-${workspaceHealth.tone}`}>
+                        <Sparkles size={14} /> {workspaceHealth.label}
+                    </span>
+                    <h2>{data?.summary ? `${workspaceHealth.score}/100 workspace score` : 'Open a scan to unlock richer guidance'}</h2>
+                    <p>{workspaceHealth.message}</p>
+                    <div className="hero-meta">
+                        <span><FolderOpen size={14} /> {activeWorkspacePath || 'Choose a directory to scan'}</span>
+                        {data?.summary && (
+                            <span>
+                                <HardDrive size={14} />
+                                {formatCountLabel(data.summary.total_dirs, 'dir')} / {formatCountLabel(data.summary.total_files, 'file')}
+                            </span>
+                        )}
+                    </div>
+                </div>
+                <div className="hero-actions">
+                    <button className="btn-secondary" onClick={handleRefreshInsights} disabled={refreshingInsights || loading}>
+                        <RefreshCw size={16} className={refreshingInsights ? 'spin' : ''} />
+                        {refreshingInsights ? 'Refreshing...' : 'Refresh insights'}
+                    </button>
+                    <button className="btn-secondary" onClick={() => activeWorkspacePath && onBrowsePath(activeWorkspacePath)} disabled={!activeWorkspacePath}>
+                        <FolderSearch size={16} /> Browse active path
+                    </button>
+                    <button className="btn-secondary" onClick={() => handleCopyPath(activeWorkspacePath)} disabled={!activeWorkspacePath}>
+                        <Copy size={16} /> Copy path
+                    </button>
+                </div>
+            </section>
+            <section className="dashboard-grid">
+                <div className="card recent-scans-card">
+                    <div className="section-heading">
+                        <div>
+                            <h3>Recent Scans</h3>
+                            <p>Reuse cached scans without rescanning the same folders.</p>
+                        </div>
+                        <button className="btn-sm" onClick={loadScans} disabled={scansLoading}>
+                            <RefreshCw size={12} className={scansLoading ? 'spin' : ''} /> Refresh
+                        </button>
+                    </div>
+                    <div className="search-input-wrap">
+                        <Search size={16} className="icon-primary" />
+                        <input
+                            className="scan-input"
+                            value={scanQuery}
+                            onChange={e => setScanQuery(e.target.value)}
+                            placeholder="Filter scan history..."
+                        />
+                    </div>
+                    {scansLoading ? <LoadingInline /> : filteredScans.length === 0 ? (
+                        <p className="empty-text">No scan history matches the current filter.</p>
+                    ) : (
+                        <ul className="scan-history-list">
+                            {filteredScans.map(scan => {
+                                const scanTarget = getScanDisplayPath(scan);
+                                return (
+                                    <li key={scan.file} className="scan-history-item">
+                                        <div className="scan-history-copy">
+                                            <strong>{scan.display_name || scanTarget || scan.file}</strong>
+                                            <span>{scanTarget || 'Unknown path'}</span>
+                                            <small>
+                                                <Clock3 size={12} /> {formatRelativeTime(scan.modified)} • cache {formatSize(scan.cache_size || 0)}
+                                            </small>
+                                        </div>
+                                        <div className="scan-history-actions">
+                                            <button className="btn-sm btn-sm-primary" onClick={() => scanTarget && setActivePath(scanTarget)} disabled={!scanTarget}>
+                                                Analyze
+                                            </button>
+                                            <button className="btn-sm" onClick={() => scanTarget && onBrowsePath(scanTarget)} disabled={!scanTarget}>
+                                                Browse
+                                            </button>
+                                        </div>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </div>
+                <div className="card">
+                    <div className="section-heading">
+                        <div>
+                            <h3>Scan Insights</h3>
+                            <p>High-signal takeaways from the active analysis.</p>
+                        </div>
+                    </div>
+                    {dashboardHighlights.length === 0 ? (
+                        <p className="empty-text">Run a scan to see cleanup opportunities, archive coverage, and link savings.</p>
+                    ) : (
+                        <div className="insight-grid">
+                            {dashboardHighlights.map(highlight => (
+                                <InsightCard key={highlight.title} {...highlight} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </section>
             {loading ? <LoadingInline /> : !data ? <EmptyState message={emptyHint || 'Enter a directory path and click Scan, or use Browse to select a folder.'} /> : (
                 <>
                     {data.summary && (
@@ -245,7 +413,7 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
                             renderItem={f => (
                                 <>
                                     <Trash2 size={14} className="icon-red" />
-                                    <ResultPathRow path={f.path} type="file" onBrowsePath={onBrowsePath} />
+                                    <ResultPathRow path={f.path} type="file" onBrowsePath={onBrowsePath} onCopyPath={handleCopyPath} />
                                     <span className="tag">{f.reason}</span>
                                 </>
                             )} />
@@ -253,14 +421,14 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
                             renderItem={d => (
                                 <>
                                     <FolderOpen size={14} className="icon-blue" />
-                                    <ResultPathRow path={d.path} type="dir" onBrowsePath={onBrowsePath} />
+                                    <ResultPathRow path={d.path} type="dir" onBrowsePath={onBrowsePath} onCopyPath={handleCopyPath} />
                                 </>
                             )} />
                         <DetailCard title="Metadata-Only" items={data.only_metadata}
                             renderItem={d => (
                                 <>
                                     <Search size={14} className="icon-purple" />
-                                    <ResultPathRow path={d.path} type="dir" onBrowsePath={onBrowsePath} />
+                                    <ResultPathRow path={d.path} type="dir" onBrowsePath={onBrowsePath} onCopyPath={handleCopyPath} />
                                     <span className="tag">{d.file_count} files</span>
                                 </>
                             )} />
@@ -268,10 +436,10 @@ function DashboardPage({ showToast, activePath, setActivePath, onBrowsePath }) {
                             renderItem={f => (
                                 <>
                                     <Bug size={14} className="icon-red" />
-                                    <ResultPathRow path={f.path} type="file" onBrowsePath={onBrowsePath} />
+                                    <ResultPathRow path={f.path} type="file" onBrowsePath={onBrowsePath} onCopyPath={handleCopyPath} />
                                 </>
                             )} />
-                        <LinkInsightsCard data={linkData} loading={linksLoading} onBrowsePath={onBrowsePath} />
+                        <LinkInsightsCard data={linkData} loading={linksLoading} onBrowsePath={onBrowsePath} onCopyPath={handleCopyPath} />
                     </section>
                 </>
             )}
@@ -287,6 +455,8 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
     const [parent, setParent] = useState(null);
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(null); // path being scanned
+    const [searchQuery, setSearchQuery] = useState('');
+    const [sortKey, setSortKey] = useState('name-asc');
 
     const browse = useCallback(async (path) => {
         setLoading(true);
@@ -334,8 +504,19 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
         }
     };
 
-    const dirs = items.filter(i => i.is_dir);
-    const files = items.filter(i => !i.is_dir);
+    const filteredItems = useMemo(
+        () => filterAndSortBrowseItems(items, searchQuery, sortKey),
+        [items, searchQuery, sortKey],
+    );
+    const visibleStats = useMemo(() => deriveBrowseStats(filteredItems), [filteredItems]);
+    const totalStats = useMemo(() => deriveBrowseStats(items), [items]);
+    const dirs = filteredItems.filter(i => i.is_dir);
+    const files = filteredItems.filter(i => !i.is_dir);
+
+    const handleCopyCurrentPath = useCallback(async () => {
+        const copied = await copyText(current);
+        showToast(copied ? 'Path copied' : 'Copy failed', copied ? 'success' : 'error');
+    }, [current, showToast]);
 
     return (
         <>
@@ -349,6 +530,47 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                 {parent && (
                     <button className="btn-sm" onClick={() => browse(parent)}><ArrowUp size={12} /> Up</button>
                 )}
+            </div>
+            <div className="card browse-toolbar">
+                <div className="browse-toolbar-row">
+                    <div className="search-input-wrap browse-search-grow">
+                        <Search size={16} className="icon-primary" />
+                        <input
+                            className="scan-input"
+                            value={searchQuery}
+                            onChange={e => setSearchQuery(e.target.value)}
+                            placeholder="Filter folders and files in the current directory..."
+                        />
+                    </div>
+                    <select className="scan-input browse-select" value={sortKey} onChange={e => setSortKey(e.target.value)}>
+                        <option value="name-asc">Name A-Z</option>
+                        <option value="name-desc">Name Z-A</option>
+                        <option value="size-desc">Largest files first</option>
+                        <option value="size-asc">Smallest files first</option>
+                        <option value="type-asc">Type first</option>
+                    </select>
+                    <button className="btn-sm" onClick={handleCopyCurrentPath} disabled={!current}>
+                        <Copy size={12} /> Copy path
+                    </button>
+                    <button className="btn-sm btn-sm-primary" onClick={() => current && onAnalyze(current)} disabled={!current}>
+                        <Play size={12} /> Analyze current
+                    </button>
+                    <button className="btn-sm" onClick={() => current && handleScanDir(current)} disabled={!current || scanning === current}>
+                        <RefreshCw size={12} className={scanning === current ? 'spin' : ''} />
+                        {scanning === current ? 'Scanning...' : 'Scan current'}
+                    </button>
+                </div>
+                <p className="browse-helper-text">
+                    {searchQuery
+                        ? `Showing ${filteredItems.length} of ${items.length} items in ${current || '/'}`
+                        : `Quickly search, sort, rescan, or analyze ${current || 'the current folder'} from one place.`}
+                </p>
+            </div>
+            <div className="summary-bar">
+                <span><Folder size={14} /> {formatCountLabel(visibleStats.directories, 'folder')}</span><span>•</span>
+                <span><File size={14} /> {formatCountLabel(visibleStats.files, 'file')}</span><span>•</span>
+                <span>{formatSize(visibleStats.totalFileBytes)} visible file size</span>
+                {searchQuery && <><span>•</span><span>{formatCountLabel(totalStats.directories + totalStats.files, 'total item')}</span></>}
             </div>
 
             {loading ? <LoadingInline /> : (
@@ -374,7 +596,9 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                             </div>
                         </div>
                     ))}
-                    {dirs.length === 0 && files.length === 0 && <p className="empty-text">Empty directory</p>}
+                    {dirs.length === 0 && files.length === 0 && (
+                        <p className="empty-text">{items.length === 0 ? 'Empty directory' : 'No items match the current filter'}</p>
+                    )}
                 </div>
             )}
 
@@ -1234,6 +1458,16 @@ function StatCard({ title, value, icon, color }) {
     return (<div className={`stat-card color-${color}`}><div className="stat-icon">{icon}</div><div className="stat-info"><h3>{value}</h3><p>{title}</p></div></div>);
 }
 
+function InsightCard({ title, value, description, tone = 'neutral' }) {
+    return (
+        <div className={`insight-card tone-${tone}`}>
+            <span className="insight-label">{title}</span>
+            <strong>{value}</strong>
+            <p>{description}</p>
+        </div>
+    );
+}
+
 function DetailCard({ title, items = [], renderItem, limit = 20 }) {
     const [expanded, setExpanded] = useState(false);
     const shown = expanded ? items : items.slice(0, limit);
@@ -1249,7 +1483,7 @@ function DetailCard({ title, items = [], renderItem, limit = 20 }) {
     );
 }
 
-function LinkInsightsCard({ data, loading, onBrowsePath }) {
+function LinkInsightsCard({ data, loading, onBrowsePath, onCopyPath }) {
     const hardlinks = data?.hardlinks || [];
     const symlinks = data?.symlinks || [];
 
@@ -1293,7 +1527,7 @@ function LinkInsightsCard({ data, loading, onBrowsePath }) {
                         {symlinks.slice(0, 8).map((link, i) => (
                             <li key={`symlink-${i}`}>
                                 <FolderSearch size={14} className={link.broken ? 'icon-red' : 'icon-blue'} />
-                                <ResultPathRow path={link.path} type={link.is_dir ? 'dir' : 'file'} onBrowsePath={onBrowsePath} />
+                                <ResultPathRow path={link.path} type={link.is_dir ? 'dir' : 'file'} onBrowsePath={onBrowsePath} onCopyPath={onCopyPath} />
                                 {link.broken && <span className="tag">broken</span>}
                             </li>
                         ))}
@@ -1305,7 +1539,7 @@ function LinkInsightsCard({ data, loading, onBrowsePath }) {
     );
 }
 
-function ResultPathRow({ path, type = 'dir', onBrowsePath }) {
+function ResultPathRow({ path, type = 'dir', onBrowsePath, onCopyPath }) {
     const target = type === 'file' ? parentPath(path) : path;
     return (
         <span className="path-row">
@@ -1317,6 +1551,14 @@ function ResultPathRow({ path, type = 'dir', onBrowsePath }) {
                 disabled={!target}
             >
                 Browse
+            </button>
+            <button
+                type="button"
+                className="btn-link-inline"
+                onClick={() => onCopyPath?.(path)}
+                disabled={!path || !onCopyPath}
+            >
+                Copy
             </button>
         </span>
     );
@@ -1350,184 +1592,5 @@ function deleteTreePreset(name) {
     return next;
 }
 
-const TREE_VIDEO_EXTS = new Set([
-    '.mp4', '.mkv', '.avi', '.wmv', '.mov', '.flv',
-    '.m2ts', '.iso', '.rmvb', '.ts', '.m4v', '.mpg',
-    '.mpeg', '.webm', '.vob', '.3gp',
-]);
-const TREE_ARCHIVE_EXTS = new Set(['.zip', '.rar', '.7z', '.tar', '.gz']);
-const METADATA_FILTER_PRESET = 'jpg,jpeg,png,nfo,txt,srt,ass';
-
-function buildTreeDirectoryIndex(nodes) {
-    const directoryMap = new Map();
-    const parentMap = new Map();
-    const stack = [];
-    let rootDepth = null;
-
-    const finalizeNode = () => {
-        const finished = stack.pop();
-        if (!finished || !stack.length) return;
-        const parent = stack[stack.length - 1];
-
-        parent.totalSubdirCount += 1 + finished.totalSubdirCount;
-        parent.fileCount += finished.fileCount;
-        parent.fileSize += finished.fileSize;
-        finished.extCounts.forEach((count, ext) => {
-            parent.extCounts.set(ext, (parent.extCounts.get(ext) || 0) + count);
-        });
-        parent.hasVideo = parent.hasVideo || finished.hasVideo;
-        parent.hasArchive = parent.hasArchive || finished.hasArchive;
-    };
-
-    for (const node of nodes) {
-        while (stack.length && stack[stack.length - 1].depth >= node.depth) {
-            finalizeNode();
-        }
-
-        const parent = stack[stack.length - 1];
-        parentMap.set(node.path, parent?.path || '');
-
-        if (node.is_file) {
-            if (!parent) continue;
-            const ext = normalizeExt(node.ext);
-            parent.fileCount += 1;
-            parent.fileSize += node.size || 0;
-            parent.extCounts.set(ext, (parent.extCounts.get(ext) || 0) + 1);
-            parent.hasVideo = parent.hasVideo || TREE_VIDEO_EXTS.has(ext);
-            parent.hasArchive = parent.hasArchive || TREE_ARCHIVE_EXTS.has(ext);
-            continue;
-        }
-
-        if (rootDepth === null) rootDepth = node.depth;
-        const meta = {
-            ...node,
-            parentPath: parent?.path || '',
-            relativeDepth: node.depth - rootDepth,
-            fileCount: 0,
-            fileSize: 0,
-            totalSubdirCount: 0,
-            extCounts: new Map(),
-            hasVideo: false,
-            hasArchive: false,
-            extSummary: '',
-        };
-        directoryMap.set(node.path, meta);
-        stack.push(meta);
-    }
-
-    while (stack.length) {
-        finalizeNode();
-    }
-
-    directoryMap.forEach(meta => {
-        meta.extSummary = summarizeExtCounts(meta.extCounts);
-    });
-
-    return {
-        directories: Array.from(directoryMap.values()),
-        directoryMap,
-        parentMap,
-    };
-}
-
-function applyTreeCollapse(nodes, collapsed) {
-    const visibleNodes = [];
-    const hiddenPrefixes = new Set();
-    for (const node of nodes) {
-        let hidden = false;
-        for (const prefix of hiddenPrefixes) {
-            if (node.path.startsWith(prefix + '/')) {
-                hidden = true;
-                break;
-            }
-        }
-        if (hidden) continue;
-        visibleNodes.push(node);
-        if (!node.is_file && collapsed.has(node.path)) {
-            hiddenPrefixes.add(node.path);
-        }
-    }
-    return visibleNodes;
-}
-
-function addPathWithAncestors(path, parentMap, targetSet) {
-    let current = path;
-    while (current) {
-        if (targetSet.has(current)) break;
-        targetSet.add(current);
-        current = parentMap.get(current) || '';
-    }
-}
-
-function matchesNodeQuery(node, query) {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return node.name.toLowerCase().includes(q) || node.path.toLowerCase().includes(q);
-}
-
-function parseExtensionList(value) {
-    return value
-        .split(',')
-        .map(item => normalizeExt(item))
-        .filter(Boolean);
-}
-
-function normalizeExt(value) {
-    const clean = String(value || '').trim().toLowerCase().replace(/^\.+/, '');
-    return clean ? `.${clean}` : '';
-}
-
-function summarizeExtCounts(extCounts, limit = 3) {
-    const entries = Array.from(extCounts.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, limit);
-    if (entries.length === 0) return '';
-    const summary = entries.map(([ext]) => ext || '(no ext)').join(', ');
-    return extCounts.size > limit ? `${summary}, +${extCounts.size - limit}` : summary;
-}
-
-function parseLevelFilter(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return null;
-    const parsed = Number(raw);
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-}
-
-function parseSizeInput(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return null;
-    const match = raw.match(/^(\d+(?:\.\d+)?)\s*([kmgt]?b?)?$/i);
-    if (!match) return Number.NaN;
-    const amount = Number(match[1]);
-    const unit = (match[2] || 'b').toLowerCase();
-    const scale = {
-        b: 1,
-        k: 1024,
-        kb: 1024,
-        m: 1024 ** 2,
-        mb: 1024 ** 2,
-        g: 1024 ** 3,
-        gb: 1024 ** 3,
-        t: 1024 ** 4,
-        tb: 1024 ** 4,
-    }[unit];
-    return scale ? Math.round(amount * scale) : Number.NaN;
-}
-
 function LoadingInline() { return <div className="loading-state-inline"><div className="spinner"></div><p>Loading...</p></div>; }
 function EmptyState({ message }) { return <div className="empty-state"><AlertTriangle size={48} className="icon-orange" /><h2>No Data</h2><p>{message}</p></div>; }
-function formatSize(bytes) {
-    if (!bytes) return '0 B';
-    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
-}
-
-function parentPath(path) {
-    if (!path) return '';
-    const normalized = String(path).replace(/\\/g, '/').replace(/\/+$/, '');
-    if (!normalized) return '';
-    const idx = normalized.lastIndexOf('/');
-    if (idx <= 0) return normalized;
-    return normalized.slice(0, idx);
-}
