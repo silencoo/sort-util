@@ -457,6 +457,7 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
     const [scanning, setScanning] = useState(null); // path being scanned
     const [searchQuery, setSearchQuery] = useState('');
     const [sortKey, setSortKey] = useState('name-asc');
+    const [pathInput, setPathInput] = useState('');
 
     const browse = useCallback(async (path) => {
         setLoading(true);
@@ -469,6 +470,7 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                 setItems([]);
                 setCurrent('');
                 setParent(null);
+                setPathInput('');
                 return;
             }
             setItems(d.items || []);
@@ -476,6 +478,7 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                 setSearchQuery('');
             }
             setCurrent(d.current);
+            setPathInput(d.current || '');
             setParent(d.parent);
         } catch {
             showToast('Browse failed');
@@ -521,6 +524,28 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
         showToast(copied ? 'Path copied' : 'Copy failed', copied ? 'success' : 'error');
     }, [current, showToast]);
 
+    const resolveAbsolutePath = useCallback((rawPath) => {
+        const value = String(rawPath || '').trim();
+        if (!value) return value;
+
+        // Already an absolute Windows or POSIX path
+        if (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('/')) {
+            return value;
+        }
+
+        const root = (current || '').trim();
+        if (!root) return value;
+
+        const sep = root.includes('\\') ? '\\' : '/';
+        return root.replace(/[\\/]+$/, '') + sep + value.replace(/^[\\/]+/, '');
+    }, [current]);
+
+    const handleJumpToPath = useCallback(() => {
+        const target = (pathInput || '').trim();
+        if (!target) return;
+        browse(target);
+    }, [browse, pathInput]);
+
     return (
         <>
             <header className="topbar">
@@ -533,6 +558,24 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                 {parent && (
                     <button className="btn-sm" onClick={() => browse(parent)}><ArrowUp size={12} /> Up</button>
                 )}
+            </div>
+            <div className="card browse-toolbar" style={{ marginBottom: '12px' }}>
+                <div className="browse-toolbar-row">
+                    <input
+                        className="scan-input browse-search-grow"
+                        value={pathInput}
+                        onChange={e => setPathInput(e.target.value)}
+                        placeholder="Jump to path (e.g. D:\\Media or /data/media)..."
+                        onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                                handleJumpToPath();
+                            }
+                        }}
+                    />
+                    <button className="btn-sm btn-sm-primary" onClick={handleJumpToPath} disabled={!pathInput.trim()}>
+                        <FolderSearch size={12} /> Go
+                    </button>
+                </div>
             </div>
             <div className="card browse-toolbar">
                 <div className="browse-toolbar-row">
@@ -846,10 +889,29 @@ function TreeViewPage({ showToast, activePath }) {
 
         setCleanupLoading(true);
         try {
+            const scanRoot = activePath || resolvedPath || '';
+            const makeAbsolutePath = (rawPath) => {
+                const value = String(rawPath || '').trim();
+                if (!value) return value;
+
+                // Already an absolute Windows or POSIX path
+                if (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('/')) {
+                    return value;
+                }
+
+                const root = String(scanRoot || '').trim();
+                if (!root) return value;
+
+                const sep = root.includes('\\') ? '\\' : '/';
+                return root.replace(/[\\/]+$/, '') + sep + value.replace(/^[\\/]+/, '');
+            };
+
+            const targetPaths = cleanupTargets.map(dir => makeAbsolutePath(dir.path));
+
             const r = await fetch(`${API}/api/preview-delete`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paths: cleanupTargets.map(dir => dir.path) }),
+                body: JSON.stringify({ paths: targetPaths }),
             });
             const d = await r.json();
             if (!r.ok || d.error) {
