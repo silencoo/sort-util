@@ -474,10 +474,16 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
                 return;
             }
             setItems(d.items || []);
-            if (d.current && d.current !== current) {
-                setSearchQuery('');
+            
+            if (d.current) {
+                setCurrent(prev => {
+                    if (prev !== d.current) setSearchQuery('');
+                    return d.current;
+                });
+            } else {
+                setCurrent('');
             }
-            setCurrent(d.current);
+            
             setPathInput(d.current || '');
             setParent(d.parent);
         } catch {
@@ -485,7 +491,7 @@ function BrowsePage({ showToast, onAnalyze, initialPath }) {
         } finally {
             setLoading(false);
         }
-    }, [current, showToast]);
+    }, [showToast]);
 
     useEffect(() => { browse(initialPath || ''); }, [browse, initialPath]);
 
